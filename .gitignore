@@ -1,0 +1,15 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/zywn
+zywn.so
+zywn.dylib
+zywn.dll
+zywn.a
+zywn.lib
+zywn-test-*
+*.exe
+*.o
+*.obj
+*.lst
