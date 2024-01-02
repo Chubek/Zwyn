@@ -1,0 +1,5 @@
+name "zwyn"
+description "A minimal version control system"
+authors "Chubak Bidpaa"
+copyright "Copyright © 2024, Chubak Bidpaa"
+license "GPL-3.0-or-later"
