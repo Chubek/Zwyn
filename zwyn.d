@@ -143,14 +143,14 @@ class Path
         return stripExtension(self.value);
     }
 
-    string[] chainWith(Path firstSegment, , ...)
+    string[] chainWith(Path firstSegment, string[] segments)
     {
-        return chainPath((this.value, firstSegment.value, args).array);
+        return chainPath((this.value, firstSegment.value ~ segments).array);
     }
 
     DirEntry[] readDir()
     {
-        return dirEntries(this.value, SpanMode.shallow)
+        return dirEntries(this.value, SpanMode.shallow);
     }
 
     string readFile()
@@ -280,7 +280,7 @@ class Repository
 
     void switchBranch(string branchName)
     {
-        auto targetBranch = branches.byValue!(Branch[int],
+        auto const targetBranch = branches.byValue!(Branch[int],
                 string)(branch => branch.branchName == branchName);
         if (targetBranch !is null)
         {
