@@ -2,7 +2,7 @@ import std.stdio;
 import std.path;
 import std.file;
 import std.array;
-import std.digest.crc;
+import std.digest.murmurhash;
 
 enum SnapshotsImage = ".zwyn";
 
@@ -10,71 +10,6 @@ enum PathKind
 {
     DIRECTORY,
     FILE,
-}
-
-class FileContents
-{
-    string content;
-
-    this(string content)
-    {
-        this.content = content;
-    }
-
-    string getContent()
-    {
-        return content;
-    }
-
-    void setContent(string newContent)
-    {
-        content = newContent;
-    }
-}
-
-class DirContents
-{
-    DirEntry[] files;
-    DirEntry[] directories;
-
-    this(DirEntry[] entries)
-    {
-        foreach (e; entries)
-        {
-            if (e.isFile())
-            {
-                this.files ~= e;
-            }
-            else
-                this.directories ~= e;
-        }
-    }
-
-    DirEntry[] getFiles()
-    {
-        return this.files.dup;
-    }
-
-    DirEntry[] getDirectories()
-    {
-        return this.directories.dup;
-    }
-}
-
-union Contents
-{
-    FileContents fileContents;
-    DirContents dirContents;
-
-    this(FileContents fileContents)
-    {
-        this.fileContents = fileContents;
-    }
-
-    this(DirContents dirContents)
-    {
-        this.dirContents = dirContents;
-    }
 }
 
 class Path
@@ -164,6 +99,229 @@ class Path
     }
 }
 
+class WorkingDirectoryTree
+{
+    Path root;
+
+    this(Path root)
+    {
+        this.root = root;
+    }
+
+    void build()
+    {
+        auto dirEntries = root.readDir();
+        foreach (entry; dirEntries)
+        {
+            if (entry.isFile())
+            {
+                auto filePath = root.chainWith(entry.name)[0];
+                auto fileContents = root.readFile();
+                auto fileNode = new FileNode(filePath, fileContents);
+            }
+            else if (entry.isDirectory())
+            {
+                auto dirPath = root.chainWith(entry.name)[0];
+                auto dirNode = new DirectoryNode(dirPath);
+                dirNode.build();
+            }
+        }
+    }
+
+    void update(Path updatedPath)
+    {
+        auto node = findNode(updatedPath);
+        if (node !is null)
+        {
+            if (updatedPath.exists())
+            {
+                node.update();
+            }
+            else
+            {
+                node.remove();
+            }
+        }
+        else
+        {
+
+        }
+    }
+
+    void commit(Path updatedPath, Commit commit)
+    {
+        auto node = findNode(updatedPath);
+        if (node !is null)
+        {
+            node.commit(commit);
+        }
+        else
+        {
+
+        }
+    }
+
+    Node findNode(Path path)
+    {
+        return this.findNodeRecursive(root, path);
+    }
+
+    Node findNodeRecursive(Node currentNode, Path path)
+    {
+        if (currentNode.path == path)
+        {
+            return currentNode;
+        }
+
+        if (currentNode is DirectoryNode)
+        {
+            auto dirNode = cast(DirectoryNode) currentNode;
+            foreach (child; dirNode.children)
+            {
+                auto result = findNodeRecursive(child, path);
+                if (result !is null)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    ulong[2] getHash()
+    {
+        MurmurHash128State state;
+        state.initialize();
+        computeHashRecursive(root, state);
+        return state.finalize();
+    }
+
+    private void computeHashRecursive(Node currentNode, MurmurHash128State state)
+    {
+        state.update(cast(ubyte[]) currentNode.path.value);
+
+        if (currentNode is DirectoryNode)
+        {
+            auto dirNode = cast(DirectoryNode) currentNode;
+            foreach (child; dirNode.children)
+            {
+                computeHashRecursive(child, state);
+            }
+        }
+        else if (currentNode is FileNode)
+        {
+            auto fileNode = cast(FileNode) currentNode;
+            state.update(cast(ubyte[]) fileNode.contents.getCrc32String());
+        }
+    }
+
+}
+
+abstract class Node
+{
+    Path path;
+
+    this(Path path)
+    {
+        this.path = path;
+    }
+
+    abstract void update();
+
+    abstract void remove();
+
+    abstract void commit(Commit commit);
+}
+
+class FileNode : Node
+{
+    FileContents contents;
+
+    this(Path path, FileContents contents)
+    {
+        super(path);
+        this.contents = contents;
+    }
+
+    override void update()
+    {
+        contents = path.readFile();
+    }
+
+    override void remove()
+    {
+
+        if (path.exists())
+        {
+            path.removeSelf();
+        }
+    }
+
+    override void commit(Commit commit)
+    {
+
+        commit.files ~= path;
+        commit.commitChanges(contents.getCrc32String());
+    }
+}
+
+class DirectoryNode : Node
+{
+    Node[] children;
+
+    this(Path path)
+    {
+        super(path);
+        build();
+    }
+
+    void build()
+    {
+        auto dirEntries = path.readDir();
+        foreach (entry; dirEntries)
+        {
+            if (entry.isFile())
+            {
+                auto filePath = path.chainWith(entry.name)[0];
+                auto fileNode = new FileNode(filePath, filePath.readFile());
+                children ~= fileNode;
+            }
+            else if (entry.isDirectory())
+            {
+                auto dirPath = path.chainWith(entry.name)[0];
+                auto dirNode = new DirectoryNode(dirPath);
+                children ~= dirNode;
+            }
+        }
+    }
+
+    override void update()
+    {
+
+        build();
+    }
+
+    override void remove()
+    {
+
+        if (path.exists())
+        {
+            path.removeSelf();
+        }
+    }
+
+    override void commit(Commit commit)
+    {
+
+        commit.directories ~= path;
+        foreach (child; children)
+        {
+            child.commit(commit);
+        }
+    }
+}
+
 class Tag
 {
     string name;
@@ -179,7 +337,7 @@ class Commit
     ulong commitId;
     string message;
     Tag tag;
-    CRC32 checkSum;
+    string checkSum;
     Path[] files;
     Path[] directories;
 
@@ -316,7 +474,7 @@ class Repository
         }
         else
         {
-            // Handle error or return a default FileContents object
+
             return new FileContents("");
         }
     }
