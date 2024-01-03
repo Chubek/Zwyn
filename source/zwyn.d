@@ -3,6 +3,7 @@ import std.path;
 import std.file;
 import std.array;
 import murmur.d;
+import std.c.crc;
 
 enum SnapshotsImage = ".zwyn";
 
@@ -28,74 +29,65 @@ class Path
 
     void read()
     {
-        if (this.exists())
+        if (exists())
         {
-            if (this.kind == PathKind.DIRECTORY)
-            {
-                auto dirContents = this.readDir();
-                this.contents = Contents(dirContents);
-            }
-            else if (this.kind == PathKind.FILE)
-            {
-                auto fileContents = this.readFile();
-                this.contents = Contents(fileContents);
-            }
+            contents = (kind == PathKind.DIRECTORY) ? Contents(readDir()) : Contents(readFile());
         }
     }
 
-    void removeSelf(void)
+    void removeSelf()
     {
-        this.removed = true;
+        removed = true;
     }
 
-    bool exists(void)
+    bool exists()
     {
-        return exists(this.value);
+        return exists(value);
     }
 
-    bool isAbsolute(void)
+    bool isAbsolute()
     {
-        return isAbsolute(self.value);
+        return isAbsolute(value);
     }
 
-    bool isValid(void)
+    bool isValid()
     {
-        return isValidPath(self.value);
+        return isValidPath(value);
     }
 
-    auto baseName(void)
+    auto baseName()
     {
-        return baseName(self.value);
+        return baseName(value);
     }
 
-    auto dirName(void)
+    auto dirName()
     {
-        return dirName(self.value);
+        return dirName(value);
     }
 
-    auto stripExtension(void)
+    auto stripExtension()
     {
-        return stripExtension(self.value);
+        return stripExtension(value);
     }
 
     string[] chainWith(Path firstSegment, string[] segments)
     {
-        return chainPath((this.value, firstSegment.value ~ segments).array);
+        return chainPath((value, firstSegment.value ~ segments).array);
     }
 
     DirEntry[] readDir()
     {
-        return dirEntries(this.value, SpanMode.shallow);
+        return dirEntries(value, SpanMode.shallow);
     }
 
     string readFile()
     {
-        return readText(this.value);
+        return readText(value);
     }
 
     bool opEquals(Path p)
     {
-        return p.value == this.value;
+        return p.value == value;
     }
 }
 
@@ -107,39 +99,25 @@ class WorkingDirectoryTree
     this(Path root, string[] ignoreList)
     {
         this.root = root;
-	this.ignoreList = ignoreList;
+        this.ignoreList = ignoreList;
     }
 
     bool shouldIgnore(string entryName)
     {
-        foreach (pattern; ignoreList)
-        {
-            if (std.path.globMatch(entryName, pattern))
-                return true;
-        }
-        return false;
+        return any!(pattern => std.path.globMatch(entryName, pattern))(ignoreList);
     }
 
     void build()
     {
-        auto dirEntries = root.readDir();
-        foreach (entry; dirEntries)
+        foreach (entry; root.readDir())
         {
-    	    if (shouldIgnore(entry.name))
+            if (shouldIgnore(entry.name))
                 continue;
-	
-	    if (entry.isFile())
-            {
-                auto filePath = root.chainWith(entry.name)[0];
-                auto fileContents = root.readFile();
-                auto fileNode = new FileNode(filePath, fileContents);
-            }
+
+            if (entry.isFile())
+                new FileNode(root.chainWith(entry.name)[0], root.readFile());
             else if (entry.isDirectory())
-            {
-                auto dirPath = root.chainWith(entry.name)[0];
-                auto dirNode = new DirectoryNode(dirPath);
-                dirNode.build();
-            }
+                new DirectoryNode(root.chainWith(entry.name)[0]).build();
         }
     }
 
@@ -147,59 +125,29 @@ class WorkingDirectoryTree
     {
         auto node = findNode(updatedPath);
         if (node !is null)
-        {
-            if (updatedPath.exists())
-            {
-                node.update();
-            }
-            else
-            {
-                node.remove();
-            }
-        }
-        else
-        {
-
-        }
+            (updatedPath.exists()) ? node.update() : node.remove();
     }
 
     void commit(Path updatedPath, Commit commit)
     {
         auto node = findNode(updatedPath);
         if (node !is null)
-        {
             node.commit(commit);
-        }
-        else
-        {
-
-        }
     }
 
     Node findNode(Path path)
     {
-        return this.findNodeRecursive(root, path);
+        return findNodeRecursive(root, path);
     }
 
     Node findNodeRecursive(Node currentNode, Path path)
     {
         if (currentNode.path == path)
-        {
             return currentNode;
-        }
 
-        if (currentNode is DirectoryNode)
-        {
-            auto dirNode = cast(DirectoryNode) currentNode;
-            foreach (child; dirNode.children)
-            {
-                auto result = findNodeRecursive(child, path);
-                if (result !is null)
-                {
-                    return result;
-                }
-            }
-        }
+        if (currentNode is DirectoryNode(dirNode))
+            return findNodeRecursive(dirNode.children.find!(child => findNodeRecursive(child,
+                    path) !is null), path);
 
         return null;
     }
@@ -212,25 +160,16 @@ class WorkingDirectoryTree
         return state.finalize();
     }
 
-    private void computeHashRecursive(Node currentNode, MurmurHash128State state)
+    void computeHashRecursive(Node currentNode, MurmurHash128State state)
     {
         state.update(cast(ubyte[]) currentNode.path.value);
 
-        if (currentNode is DirectoryNode)
-        {
-            auto dirNode = cast(DirectoryNode) currentNode;
+        if (currentNode is DirectoryNode(dirNode))
             foreach (child; dirNode.children)
-            {
                 computeHashRecursive(child, state);
-            }
-        }
-        else if (currentNode is FileNode)
-        {
-            auto fileNode = cast(FileNode) currentNode;
-            state.update(cast(ubyte[]) fileNode.contents.getCrc32String());
-        }
+        else if (currentNode is FileNode(fileNode))
+                    state.update(cast(ubyte[]) fileNode.contents.getCrc32String());
     }
-
 }
 
 abstract class Node
@@ -243,9 +182,7 @@ abstract class Node
     }
 
     abstract void update();
-
     abstract void remove();
-
     abstract void commit(Commit commit);
 }
 
@@ -266,16 +203,12 @@ class FileNode : Node
 
     override void remove()
     {
-
         if (path.exists())
-        {
             path.removeSelf();
-        }
     }
 
     override void commit(Commit commit)
     {
-
         commit.files ~= path;
         commit.commitChanges(contents.getCrc32String());
     }
@@ -291,49 +224,33 @@ class DirectoryNode : Node
         build();
     }
 
-    private void build()
+    void build()
     {
-        auto dirEntries = path.readDir();
-        foreach (entry; dirEntries)
+        foreach (entry; path.readDir())
         {
             if (entry.isFile())
-            {
-                auto filePath = path.chainWith(entry.name)[0];
-                auto fileNode = new FileNode(filePath, filePath.readFile());
-                children ~= fileNode;
-            }
+                children ~= new FileNode(path.chainWith(entry.name)[0], path.readFile());
             else if (entry.isDirectory())
-            {
-                auto dirPath = path.chainWith(entry.name)[0];
-                auto dirNode = new DirectoryNode(dirPath);
-                children ~= dirNode;
-            }
+                children ~= new DirectoryNode(path.chainWith(entry.name)[0]).build();
         }
     }
 
     override void update()
     {
-
         build();
     }
 
     override void remove()
     {
-
         if (path.exists())
-        {
             path.removeSelf();
-        }
     }
 
     override void commit(Commit commit)
     {
-
         commit.directories ~= path;
         foreach (child; children)
-        {
             child.commit(commit);
-        }
     }
 }
 
@@ -352,9 +269,11 @@ class Commit
     ulong commitId;
     string message;
     Tag tag;
-    ulong[2] checkSum; // Change checkSum type to ulong[2]
+    ulong[2] checkSum;
     Path[] files;
     Path[] directories;
+    FileNode[] fileSnapshots;
+    DirectoryNode[] directorySnapshots;
 
     this(ulong commitId, string message)
     {
@@ -362,26 +281,19 @@ class Commit
         this.message = message;
     }
 
-    // New method to calculate MurmurHash128 for the commit content
     ulong[2] calculateMurmurHash()
     {
         MurmurHash128State state;
         state.initialize();
-        
-        // Update the hash with the commit details
-        state.update(cast(ubyte[])commitId);
-        state.update(cast(ubyte[])message);
-        
+        state.update(cast(ubyte[]) commitId);
+        state.update(cast(ubyte[]) message);
+
         foreach (file; files)
-        {
-            state.update(cast(ubyte[])file.value);
-        }
-        
+            state.update(cast(ubyte[]) file.value);
+
         foreach (dir; directories)
-        {
-            state.update(cast(ubyte[])dir.value);
-        }
-        
+            state.update(cast(ubyte[]) dir.value);
+
         return state.finalize();
     }
 
@@ -397,38 +309,23 @@ class Commit
 
     void removeFile(Path file)
     {
-        for (auto i = 0; i < files.length; i++)
-        {
-            if (files[i] == file)
-            {
-                files = files[0..i] ~ files[i+1..$];
-                break;
-            }
-        }
+        files = files.remove!(f => f == file);
     }
 
     void removeDirectory(Path directory)
     {
-        for (auto i = 0; i < directories.length; i++)
-        {
-            if (directories[i] == directory)
-            {
-                directories = directories[0..i] ~ directories[i+1..$];
-                break;
-            }
-        }
+        directories = directories.remove!(d => d == directory);
     }
 
-    void commitChanges(Commit commit)
+    void commitChanges(FileContents[] fileSnapshots, Path[] directorySnapshots)
     {
-        commit.files ~= files;
-        commit.directories ~= directories;
-        commit.checkSum = calculateMurmurHash();
+        this.fileSnapshots = fileSnapshots.dup;
+        this.directorySnapshots = directorySnapshots.dup;
+        checkSum = calculateMurmurHash();
     }
 }
 
-
-enum BranchState
+enum SnapshotState
 {
     ORDINARY,
     STAGED,
@@ -439,56 +336,96 @@ enum BranchState
 
 class Snapshot
 {
-    BranchState state;
-    Path[] directories;
-    Path[] files;
+    SnapshotState state;
+    FileNode[] directories;
+    DirectoryNode[] files;
     Commit[] commits;
-    ulong ndirs;
-    ulong nfiles;
 
     this()
     {
-        state = BranchState.ORDINARY;
-        directories = new Path[](0);
-        files = new Path[](0);
+        state = SnapshotState.ORDINARY;
+        directories = new FileNode[](0);
+        files = new DirectoryNode[](0);
         commits = new Commit[](0);
     }
 
-    void addDirectory(Path directory)
+    void addDirectory(DirectoryNode directory)
     {
         directories ~= directory;
     }
 
-    void addFile(Path file)
+    void addFile(FileNode file)
     {
         files ~= file;
     }
 
-    void removeDirectory(Path directory)
+    void removeDirectory(DirectoryNode directory)
     {
-        for (auto i = 0; i < ndirs; i++)
-        {
-            if (this.directories[i] == directory)
-            {
-                this.directories[i].removeSelf();
-            }
-        }
+        directories = directories.remove!(d => d == directory);
     }
 
-    void removeFile(Path file)
+    void removeFile(FileNode file)
     {
-        for (auto i = 0; i < nfiles; i++)
-        {
-            if (this.files[i] == file)
-            {
-                this.files[i].removeSelf();
-            }
-        }
+        files = files.remove!(f => f == file);
     }
 
     void commitChanges(Commit commit)
     {
         commits ~= commit;
+    }
+}
+
+class HistoryEntry
+{
+    Commit commit;
+    FileNode[] fileSnapshots;
+    DirectoryNode[] directorySnapshots;
+    ulong timestamp;
+
+    this(Commit commit)
+    {
+        this.commit = commit;
+        this.timestamp = Clock.currTime().msecs;
+    }
+
+    this(Commit commit, FileNode[] fileSnapshots, DirectoryNode[] directorySnapshots)
+    {
+        this.commit = commit;
+        this.fileSnapshots = fileSnapshots.dup;
+        this.directorySnapshots = directorySnapshots.dup;
+        this.timestamp = Clock.currTime().msecs;
+    }
+}
+
+class Branch
+{
+    int id;
+    int parentId;
+    string branchName;
+    ref Repository repository;
+    Snapshot snapshot;
+    HistoryEntry[] history;
+
+    this(int id, int parentId, string branchName, ref Repository repository)
+    {
+        this.id = id;
+        this.parentId = parentId;
+        this.branchName = branchName;
+        this.snapshot = new Snapshot();
+        this.repository = repository;
+        this.history = new HistoryEntry[](0);
+    }
+
+    void commit(string message)
+    {
+        auto fileSnapshots = repository.snapshotFileContents();
+        auto directorySnapshots = repository.snapshotDirectoryContents();
+
+        auto newCommit = new Commit(++repository.currentCommitId, message);
+        snapshot.commitChanges(newCommit);
+        repository.commits ~= newCommit;
+
+        history ~= new HistoryEntry(newCommit, fileSnapshots, directorySnapshots);
     }
 }
 
@@ -511,24 +448,22 @@ class Repository
     {
         int newBranchId = branches.length + 1;
         int parentId = 0;
-        auto newBranch = new Branch(newBranchId, parentId, branchName);
+        auto newBranch = new Branch(newBranchId, parentId, branchName, this);
         branches[newBranchId] = newBranch;
         return newBranch;
     }
 
     void switchBranch(string branchName)
     {
-        auto const targetBranch = branches.byValue!(Branch[int],
+        auto targetBranch = branches.byValue!(Branch[int],
                 string)(branch => branch.branchName == branchName);
         if (targetBranch !is null)
-        {
             currentCommitId = targetBranch.snapshot.commits.length;
-        }
     }
 
     void commit(string message)
     {
-        CRC32 checkSum = calculateChecksum();
+        auto checkSum = calculateChecksum();
         auto newCommit = new Commit(++currentCommitId, message);
         newCommit.checkSum = checkSum;
         commits ~= newCommit;
@@ -548,19 +483,72 @@ class Repository
     FileContents loadFileContents(Path filePath)
     {
         if (filePath.exists() && filePath.isFile())
-        {
-            string fileContent = cast(string) std.file.read(filePath.value);
-            return new FileContents(fileContent);
-        }
+            return new FileContents(cast(string) std.file.read(filePath.value));
         else
-        {
-
             return new FileContents("");
-        }
     }
 
     void saveFileContents(Path filePath, FileContents fileContents)
     {
         std.file.write(filePath.value, fileContents.getContent());
+    }
+
+    void viewBranchHistory(string branchName)
+    {
+        auto branch = branches.byValue!(Branch, string)(b => b.branchName == branchName);
+        if (branch !is null)
+        {
+            foreach (entry; branch.history)
+            {
+                writeln("Timestamp: ", entry.timestamp);
+                writeln("Commit ID: ", entry.commit.commitId);
+                writeln("Message: ", entry.commit.message);
+                writeln("Checksum: ", entry.commit.checkSum);
+                writeln();
+            }
+        }
+    }
+
+    FileNode[] snapshotFileContents()
+    {
+        FileNode[] snapshots;
+        foreach (file; snapshot.files)
+        {
+            snapshots ~= loadFileContents(file);
+        }
+        return snapshots;
+    }
+
+    DirectoryNode[] snapshotDirectoryContents()
+    {
+        DirectoryNode[] snapshots;
+        foreach (dir; snapshot.directories)
+        {
+            snapshots ~= dir;
+        }
+        return snapshots;
+    }
+
+    CRC32 calculateChecksum()
+    {
+        MurmurHash128State state;
+        state.initialize();
+
+        state.update(cast(ubyte[]) commitId);
+        state.update(cast(ubyte[]) message);
+
+        foreach (file; files)
+        {
+            state.update(cast(ubyte[]) file.value);
+        }
+
+        foreach (dir; directories)
+        {
+            state.update(cast(ubyte[]) dir.value);
+        }
+
+        auto crc32 = CRC32.init;
+        crc32 = crc32Update(crc32, cast(ubyte[]) state.finalize().ptr, CRC32.size);
+        checkSum = crc32Finalize(crc32);
     }
 }
