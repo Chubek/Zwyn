@@ -102,10 +102,22 @@ class Path
 class WorkingDirectoryTree
 {
     Path root;
+    string[] ignoreList;
 
-    this(Path root)
+    this(Path root, string[] ignoreList)
     {
         this.root = root;
+	this.ignoreList = ignoreList;
+    }
+
+    bool shouldIgnore(string entryName)
+    {
+        foreach (pattern; ignoreList)
+        {
+            if (std.path.globMatch(entryName, pattern))
+                return true;
+        }
+        return false;
     }
 
     void build()
@@ -113,7 +125,10 @@ class WorkingDirectoryTree
         auto dirEntries = root.readDir();
         foreach (entry; dirEntries)
         {
-            if (entry.isFile())
+    	    if (shouldIgnore(entry.name))
+                continue;
+	
+	    if (entry.isFile())
             {
                 auto filePath = root.chainWith(entry.name)[0];
                 auto fileContents = root.readFile();
