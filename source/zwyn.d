@@ -2,7 +2,7 @@ import std.stdio;
 import std.path;
 import std.file;
 import std.array;
-import std.digest.murmurhash;
+import murmur.d;
 
 enum SnapshotsImage = ".zwyn";
 
@@ -276,7 +276,7 @@ class DirectoryNode : Node
         build();
     }
 
-    void build()
+    private void build()
     {
         auto dirEntries = path.readDir();
         foreach (entry; dirEntries)
@@ -337,7 +337,7 @@ class Commit
     ulong commitId;
     string message;
     Tag tag;
-    string checkSum;
+    ulong[2] checkSum; // Change checkSum type to ulong[2]
     Path[] files;
     Path[] directories;
 
@@ -346,7 +346,72 @@ class Commit
         this.commitId = commitId;
         this.message = message;
     }
+
+    // New method to calculate MurmurHash128 for the commit content
+    ulong[2] calculateMurmurHash()
+    {
+        MurmurHash128State state;
+        state.initialize();
+        
+        // Update the hash with the commit details
+        state.update(cast(ubyte[])commitId);
+        state.update(cast(ubyte[])message);
+        
+        foreach (file; files)
+        {
+            state.update(cast(ubyte[])file.value);
+        }
+        
+        foreach (dir; directories)
+        {
+            state.update(cast(ubyte[])dir.value);
+        }
+        
+        return state.finalize();
+    }
+
+    void addFile(Path file)
+    {
+        files ~= file;
+    }
+
+    void addDirectory(Path directory)
+    {
+        directories ~= directory;
+    }
+
+    void removeFile(Path file)
+    {
+        for (auto i = 0; i < files.length; i++)
+        {
+            if (files[i] == file)
+            {
+                files = files[0..i] ~ files[i+1..$];
+                break;
+            }
+        }
+    }
+
+    void removeDirectory(Path directory)
+    {
+        for (auto i = 0; i < directories.length; i++)
+        {
+            if (directories[i] == directory)
+            {
+                directories = directories[0..i] ~ directories[i+1..$];
+                break;
+            }
+        }
+    }
+
+    void commitChanges(Commit commit)
+    {
+        commit.files ~= files;
+        commit.directories ~= directories;
+        commit.checkSum = calculateMurmurHash();
+    }
 }
+
 
 enum BranchState
 {
