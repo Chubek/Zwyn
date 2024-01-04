@@ -1,9 +1,10 @@
 import std.stdio;
 import std.path;
 import std.file;
+import std.algorithm.searching;
 import std.array;
-import murmur.d;
-import std.c.crc;
+import std.digest.murmurhash;
+import std.digest.crc;
 
 enum SnapshotsImage = ".zwyn";
 
@@ -13,10 +14,31 @@ enum PathKind
     FILE,
 }
 
+class FileContents
+{
+    string content;
+
+    this(string content)
+    {
+        this.content = content;
+    }
+
+    string getContent()
+    {
+        return content;
+    }
+
+    ubyte[4] getCrc32String()
+    {
+        return crc32Of(cast(ubyte[]) content);
+
+    }
+}
+
+
 class Path
 {
     PathKind kind;
-    Contents contents;
     string value;
     bool removed;
 
@@ -27,57 +49,50 @@ class Path
         this.removed = false;
     }
 
-    void read()
-    {
-        if (exists())
-        {
-            contents = (kind == PathKind.DIRECTORY) ? Contents(readDir()) : Contents(readFile());
-        }
-    }
-
     void removeSelf()
     {
         removed = true;
     }
 
-    bool exists()
+    bool pathExists()
     {
         return exists(value);
     }
 
-    bool isAbsolute()
+    bool pathIsAbsolute()
     {
         return isAbsolute(value);
     }
 
-    bool isValid()
+    bool pathIsValid()
     {
         return isValidPath(value);
     }
 
-    auto baseName()
+    auto pathBaseName()
     {
         return baseName(value);
     }
 
-    auto dirName()
+    auto pathDirName()
     {
         return dirName(value);
     }
 
-    auto stripExtension()
+    auto pathStripExtension()
     {
         return stripExtension(value);
     }
 
-    string[] chainWith(Path firstSegment, string[] segments)
-    {
-        return chainPath((value, firstSegment.value ~ segments).array);
-    }
-
     DirEntry[] readDir()
     {
-        return dirEntries(value, SpanMode.shallow);
+	DirEntry[] entries;
+	
+	foreach (DirEntry e; dirEntries(value, SpanMode.shallow)) {
+		entries ~= e;
+	}
+	
+	return entries;
     }
 
     string readFile()
@@ -116,7 +131,7 @@ class WorkingDirectoryTree
 
             if (entry.isFile())
                 new FileNode(root.chainWith(entry.name)[0], root.readFile());
-            else if (entry.isDirectory())
+            else
                 new DirectoryNode(root.chainWith(entry.name)[0]).build();
         }
     }
@@ -125,7 +140,7 @@ class WorkingDirectoryTree
     {
         auto node = findNode(updatedPath);
         if (node !is null)
-            (updatedPath.exists()) ? node.update() : node.remove();
+            (updatedPath.pathExists()) ? node.update() : node.remove();
     }
 
     void commit(Path updatedPath, Commit commit)
@@ -154,21 +169,20 @@ class WorkingDirectoryTree
 
     ulong[2] getHash()
     {
-        MurmurHash128State state;
-        state.initialize();
-        computeHashRecursive(root, state);
+	MurmurHash3!32 state;
+	computeHashRecursive(root, state);
         return state.finalize();
     }
 
-    void computeHashRecursive(Node currentNode, MurmurHash128State state)
+    void computeHashRecursive(Node currentNode, MurmurHash3!32 state)
     {
-        state.update(cast(ubyte[]) currentNode.path.value);
+        state.put(cast(ubyte[]) currentNode.path.value);
 
         if (currentNode is DirectoryNode(dirNode))
             foreach (child; dirNode.children)
                 computeHashRecursive(child, state);
         else if (currentNode is FileNode(fileNode))
-                    state.update(cast(ubyte[]) fileNode.contents.getCrc32String());
+                    state.put(cast(ubyte[]) fileNode.contents.getCrc32String());
     }
 }
 
@@ -203,7 +217,7 @@ class FileNode : Node
 
     override void remove()
     {
-        if (path.exists())
+        if (path.pathExists())
             path.removeSelf();
     }
 
@@ -242,7 +256,7 @@ class DirectoryNode : Node
 
     override void remove()
     {
-        if (path.exists())
+        if (path.pathExists())
             path.removeSelf();
     }
 
@@ -285,14 +299,14 @@ class Commit
     {
         MurmurHash128State state;
         state.initialize();
-        state.update(cast(ubyte[]) commitId);
-        state.update(cast(ubyte[]) message);
+        state.put(cast(ubyte[]) commitId);
+        state.put(cast(ubyte[]) message);
 
         foreach (file; files)
-            state.update(cast(ubyte[]) file.value);
+            state.put(cast(ubyte[]) file.value);
 
         foreach (dir; directories)
-            state.update(cast(ubyte[]) dir.value);
+            state.put(cast(ubyte[]) dir.value);
 
         return state.finalize();
     }
@@ -402,7 +416,7 @@ class Branch
     int id;
     int parentId;
     string branchName;
-    ref Repository repository;
+    Repository repository;
     Snapshot snapshot;
     HistoryEntry[] history;
 
@@ -482,7 +496,7 @@ class Repository
 
     FileContents loadFileContents(Path filePath)
     {
-        if (filePath.exists() && filePath.isFile())
+        if (filePath.pathExists() && filePath.isFile())
             return new FileContents(cast(string) std.file.read(filePath.value));
         else
             return new FileContents("");
@@ -531,24 +545,21 @@ class Repository
 
     CRC32 calculateChecksum()
     {
-        MurmurHash128State state;
-        state.initialize();
+	MurmurHash3!32 state;
 
-        state.update(cast(ubyte[]) commitId);
-        state.update(cast(ubyte[]) message);
+        state.put(cast(ubyte[]) commitId);
+        state.put(cast(ubyte[]) message);
 
         foreach (file; files)
         {
-            state.update(cast(ubyte[]) file.value);
+            state.put(cast(ubyte[]) file.value);
         }
 
         foreach (dir; directories)
         {
-            state.update(cast(ubyte[]) dir.value);
+            state.put(cast(ubyte[]) dir.value);
         }
 
-        auto crc32 = CRC32.init;
-        crc32 = crc32Update(crc32, cast(ubyte[]) state.finalize().ptr, CRC32.size);
-        checkSum = crc32Finalize(crc32);
+        checkSum = hasher.finish();
     }
 }
