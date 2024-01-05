@@ -1,6 +1,11 @@
-# Zwyn: Minimal Version Control System
+# Zwyn - Work in Progress Version Control System
 
+Zwyn is a simple version control system implemented in D programming language. It is currently a work in progress and is being developed to provide basic versioning functionality. Zwyn is currently a WIP.
 
-Zwyn is targeted at solo programmers. IT won't have all the crap that Git and Subversion or Bazaar have. Can we rename Github to ZwynHub already?
+## Features
 
-It's still not done though. Mes amis, when a repo does not have a makefile, it's not done!
+- **Branching:** Create and switch between branches to work on different aspects of your project.
+- **Commit History:** View the commit history to understand the changes made over time.
+- **File and Directory Snapshots:** Capture and manage file and directory snapshots in each commit.
+- **Checksum:** Utilizes checksums for data integrity and verification.
+
