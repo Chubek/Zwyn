@@ -31,10 +31,8 @@ class FileContents
     ubyte[4] getCrc32String()
     {
         return crc32Of(cast(ubyte[]) content);
-
     }
 }
-
 
 class Path
 {
@@ -84,15 +82,21 @@ class Path
         return stripExtension(value);
     }
 
+    auto chainWith(Path other)
+    {
+        return chainPath([this.value, other.value]);
+    }
+
     DirEntry[] readDir()
     {
-	DirEntry[] entries;
-	
-	foreach (DirEntry e; dirEntries(value, SpanMode.shallow)) {
-		entries ~= e;
-	}
-	
-	return entries;
+        DirEntry[] entries;
+
+        foreach (DirEntry e; dirEntries(value, SpanMode.shallow))
+        {
+            entries ~= e;
+        }
+
+        return entries;
     }
 
     string readFile()
@@ -104,6 +108,25 @@ class Path
     {
         return p.value == value;
     }
+}
+
+abstract class Node
+{
+    Path path;
+
+    this(Path path)
+    {
+        this.path = path;
+    }
+
+    bool pathExists()
+    {
+        return path.pathExists();
+    }
+
+    abstract void update();
+    abstract void remove();
+    abstract void commit(Commit commit);
 }
 
 class WorkingDirectoryTree
@@ -130,7 +153,7 @@ class WorkingDirectoryTree
                 continue;
 
             if (entry.isFile())
-                new FileNode(root.chainWith(entry.name)[0], root.readFile());
+                new FileNode(root.chainWith(entry.name)[0], new FileContents(root.readFile()));
             else
                 new DirectoryNode(root.chainWith(entry.name)[0]).build();
         }
@@ -143,7 +166,7 @@ class WorkingDirectoryTree
             (updatedPath.pathExists()) ? node.update() : node.remove();
     }
 
-    void commit(Path updatedPath, Commit commit)
+    void commit(Node updatedPath, Commit commit)
     {
         auto node = findNode(updatedPath);
         if (node !is null)
@@ -169,8 +192,8 @@ class WorkingDirectoryTree
 
     ulong[2] getHash()
     {
-	MurmurHash3!32 state;
-	computeHashRecursive(root, state);
+        MurmurHash3!32 state;
+        computeHashRecursive(root, state);
         return state.finalize();
     }
 
@@ -186,20 +209,6 @@ class WorkingDirectoryTree
     }
 }
 
-abstract class Node
-{
-    Path path;
-
-    this(Path path)
-    {
-        this.path = path;
-    }
-
-    abstract void update();
-    abstract void remove();
-    abstract void commit(Commit commit);
-}
-
 class FileNode : Node
 {
     FileContents contents;
@@ -212,7 +221,7 @@ class FileNode : Node
 
     override void update()
     {
-        contents = path.readFile();
+        contents = new FileContents(path.readFile());
     }
 
     override void remove()
@@ -224,7 +233,7 @@ class FileNode : Node
     override void commit(Commit commit)
     {
         commit.files ~= path;
-        commit.commitChanges(contents.getCrc32String());
+        commit.commitChanges([contents.getCrc32String()]);
     }
 }
 
@@ -243,7 +252,8 @@ class DirectoryNode : Node
         foreach (entry; path.readDir())
         {
             if (entry.isFile())
-                children ~= new FileNode(path.chainWith(entry.name)[0], path.readFile());
+                children ~= new FileNode(path.chainWith(entry.name)[0],
+                        new FileContents(path.readFile()));
             else if (entry.isDirectory())
                 children ~= new DirectoryNode(path.chainWith(entry.name)[0]).build();
         }
@@ -286,7 +296,7 @@ class Commit
     ulong[2] checkSum;
     Path[] files;
     Path[] directories;
-    FileNode[] fileSnapshots;
+    FileContents[] fileSnapshots;
     DirectoryNode[] directorySnapshots;
 
     this(ulong commitId, string message)
@@ -297,8 +307,7 @@ class Commit
 
     ulong[2] calculateMurmurHash()
     {
-        MurmurHash128State state;
-        state.initialize();
+        MurmurHash3!32 state;
         state.put(cast(ubyte[]) commitId);
         state.put(cast(ubyte[]) message);
 
@@ -331,10 +340,9 @@ class Commit
         directories = directories.remove!(d => d == directory);
     }
 
-    void commitChanges(FileContents[] fileSnapshots, Path[] directorySnapshots)
+    void commitChanges(FileContents[] fileSnapshots)
     {
         this.fileSnapshots = fileSnapshots.dup;
-        this.directorySnapshots = directorySnapshots.dup;
         checkSum = calculateMurmurHash();
     }
 }
@@ -392,7 +400,7 @@ class Snapshot
 class HistoryEntry
 {
     Commit commit;
-    FileNode[] fileSnapshots;
+    FileContents[] fileSnapshots;
     DirectoryNode[] directorySnapshots;
     ulong timestamp;
 
@@ -402,7 +410,7 @@ class HistoryEntry
         this.timestamp = Clock.currTime().msecs;
     }
 
-    this(Commit commit, FileNode[] fileSnapshots, DirectoryNode[] directorySnapshots)
+    this(Commit commit, FileContents[] fileSnapshots, DirectoryNode[] directorySnapshots)
     {
         this.commit = commit;
         this.fileSnapshots = fileSnapshots.dup;
@@ -436,7 +444,7 @@ class Branch
         auto directorySnapshots = repository.snapshotDirectoryContents();
 
         auto newCommit = new Commit(++repository.currentCommitId, message);
-        snapshot.commitChanges(newCommit);
+        snapshot.commitChanges([fileSnapshots]);
         repository.commits ~= newCommit;
 
         history ~= new HistoryEntry(newCommit, fileSnapshots, directorySnapshots);
@@ -543,13 +551,11 @@ class Repository
         return snapshots;
     }
 
-    CRC32 calculateChecksum()
+    ulong[2] calculateChecksum()
     {
-	MurmurHash3!32 state;
-
+        MurmurHash3!32 state;
         state.put(cast(ubyte[]) commitId);
         state.put(cast(ubyte[]) message);
-
         foreach (file; files)
         {
             state.put(cast(ubyte[]) file.value);
@@ -560,6 +566,6 @@ class Repository
             state.put(cast(ubyte[]) dir.value);
         }
 
-        checkSum = hasher.finish();
+        return state.finalize();
     }
 }
